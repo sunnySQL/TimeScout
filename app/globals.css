@@ -1,0 +1,57 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/**
+ * Tailwind v4 theme tokens. Defining colors here makes Tailwind classes
+ * like `bg-accent`, `text-accent`, `bg-accent-soft` available.
+ */
+@theme {
+  --color-accent: #0f3b57;
+  --color-accent-hover: #0a2b42;
+  --color-accent-soft: #eaf1f6;
+  --color-accent-softer: #f4f8fb;
+  --color-accent-ring: #c9dce8;
+}
+
+:root {
+  color-scheme: light;
+
+  --background: #ffffff;
+  --surface: #ffffff;
+  --surface-soft: #fafafa;
+  --foreground: #0a0a0a;
+  --muted: #737373;
+  --border: #e5e5e5;
+  --border-strong: #d4d4d4;
+  --accent: #0f3b57;
+  --accent-foreground: #ffffff;
+  --success: #15803d;
+  --warning: #b45309;
+}
+
+html,
+body {
+  background: var(--background);
+  color: var(--foreground);
+}
+
+::selection {
+  background-color: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--foreground);
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}

@@ -1,0 +1,89 @@
+============================================================
+CLASSIFIER EVALUATION REPORT
+============================================================
+
+
+────────────────────────────────────────────────────────────
+CONDITION CLASSIFIER
+────────────────────────────────────────────────────────────
+
+              precision    recall  f1-score   support
+
+   excellent       0.59      0.43      0.50        68
+        fair       0.20      0.25      0.22         4
+        good       0.44      0.49      0.46        45
+      unworn       0.72      0.83      0.77        86
+   very good       0.80      0.80      0.80       193
+
+    accuracy                           0.70       396
+   macro avg       0.55      0.56      0.55       396
+weighted avg       0.70      0.70      0.70       396
+
+
+Confusion matrix:
+   predicted →     excellent          fair          good        unworn     very good
+true: excellent            29             0             9            14            16
+    true: fair             0             1             3             0             0
+    true: good             1             1            22             4            17
+  true: unworn             8             0             1            71             6
+true: very good            11             3            15            10           154
+
+
+────────────────────────────────────────────────────────────
+WATCH_TYPE CLASSIFIER
+────────────────────────────────────────────────────────────
+
+              precision    recall  f1-score   support
+
+      modern       0.96      0.96      0.96       461
+     vintage       0.82      0.83      0.83       108
+
+    accuracy                           0.93       569
+   macro avg       0.89      0.89      0.89       569
+weighted avg       0.93      0.93      0.93       569
+
+
+Confusion matrix:
+   predicted →        modern       vintage
+  true: modern           441            20
+ true: vintage            18            90
+
+
+────────────────────────────────────────────────────────────
+BRAND DISAMBIGUATOR
+────────────────────────────────────────────────────────────
+
+               precision    recall  f1-score   support
+
+  wrong_brand       0.73      0.63      0.68      1405
+correct_brand       0.20      0.28      0.24       468
+
+     accuracy                           0.54      1873
+    macro avg       0.46      0.46      0.46      1873
+ weighted avg       0.60      0.54      0.57      1873
+
+
+Confusion matrix:
+   predicted →   wrong_brand correct_brand
+true: wrong_brand           888           517
+true: correct_brand           336           132
+
+
+────────────────────────────────────────────────────────────
+REFERENCE SCORER
+────────────────────────────────────────────────────────────
+
+              precision    recall  f1-score   support
+
+   wrong_ref       0.46      0.51      0.48        57
+ correct_ref       0.83      0.80      0.82       174
+
+    accuracy                           0.73       231
+   macro avg       0.65      0.66      0.65       231
+weighted avg       0.74      0.73      0.74       231
+
+
+Confusion matrix:
+   predicted →     wrong_ref   correct_ref
+true: wrong_ref            29            28
+true: correct_ref            34           140
