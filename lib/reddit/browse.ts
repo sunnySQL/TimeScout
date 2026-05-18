@@ -9,6 +9,8 @@
 
 const DEFAULT_USER_AGENT =
   "web:timescout:0.1 (aggregator for US watch listings)";
+const REDDIT_FETCH_TIMEOUT_MS = 15_000;
+const REDDIT_MAX_RATE_LIMIT_RETRIES = 3;
 
 export type RedditPost = {
   id: string;
@@ -85,6 +87,7 @@ export async function fetchSubredditPosts(
   const userAgent = process.env.REDDIT_USER_AGENT || DEFAULT_USER_AGENT;
   const posts: RedditPost[] = [];
   let after: string | null | undefined = undefined;
+  let rateLimitRetries = 0;
 
   for (let page = 0; page < pages; page++) {
     const url = new URL(
@@ -94,19 +97,23 @@ export async function fetchSubredditPosts(
     url.searchParams.set("raw_json", "1");
     if (after) url.searchParams.set("after", after);
 
-    const res = await fetch(url, {
-      headers: { "User-Agent": userAgent },
-      cache: "no-store",
-    });
+    const res = await fetchReddit(url, userAgent);
 
     if (res.status === 429) {
-      await sleep(5000);
+      if (rateLimitRetries >= REDDIT_MAX_RATE_LIMIT_RETRIES) {
+        throw new Error(
+          `Reddit rate limited listing fetch after ${rateLimitRetries + 1} attempts. Try again later or set a more specific REDDIT_USER_AGENT.`,
+        );
+      }
+      rateLimitRetries++;
+      await sleep(retryAfterMs(res));
       page--;
       continue;
     }
     if (!res.ok) {
       throw new Error(`Reddit request failed: ${res.status} ${res.statusText}`);
     }
+    rateLimitRetries = 0;
 
     const body = (await res.json()) as ListingResponse;
     const children = body.data?.children ?? [];
@@ -182,6 +189,17 @@ export async function fetchOpCommentText(params: {
   postId: string;
   author: string;
 }): Promise<string> {
+  return fetchOpCommentTextAttempt(params, 0);
+}
+
+async function fetchOpCommentTextAttempt(
+  params: {
+    subreddit: string;
+    postId: string;
+    author: string;
+  },
+  rateLimitRetries: number,
+): Promise<string> {
   const userAgent = process.env.REDDIT_USER_AGENT || DEFAULT_USER_AGENT;
   const url = new URL(
     `https://www.reddit.com/r/${encodeURIComponent(params.subreddit)}/comments/${encodeURIComponent(params.postId)}.json`,
@@ -191,14 +209,16 @@ export async function fetchOpCommentText(params: {
   url.searchParams.set("sort", "top");
   url.searchParams.set("raw_json", "1");
 
-  const res = await fetch(url, {
-    headers: { "User-Agent": userAgent },
-    cache: "no-store",
-  });
+  const res = await fetchReddit(url, userAgent);
 
   if (res.status === 429) {
-    await sleep(5000);
-    return fetchOpCommentText(params);
+    if (rateLimitRetries >= REDDIT_MAX_RATE_LIMIT_RETRIES) {
+      throw new Error(
+        `Reddit rate limited comment fetch after ${rateLimitRetries + 1} attempts. Try again later or set a more specific REDDIT_USER_AGENT.`,
+      );
+    }
+    await sleep(retryAfterMs(res));
+    return fetchOpCommentTextAttempt(params, rateLimitRetries + 1);
   }
   if (!res.ok) return "";
 
@@ -215,6 +235,29 @@ export async function fetchOpCommentText(params: {
     if (d.body) opBodies.push(d.body);
   }
   return opBodies.join("\n\n");
+}
+
+async function fetchReddit(url: URL, userAgent: string): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REDDIT_FETCH_TIMEOUT_MS);
+  try {
+    return await fetch(url, {
+      headers: { "User-Agent": userAgent },
+      cache: "no-store",
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function retryAfterMs(res: Response): number {
+  const header = res.headers.get("retry-after");
+  const seconds = header ? Number(header) : NaN;
+  if (Number.isFinite(seconds) && seconds > 0) {
+    return Math.min(seconds * 1000, 60_000);
+  }
+  return 5000;
 }
 
 /**

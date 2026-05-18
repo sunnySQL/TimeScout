@@ -116,6 +116,7 @@ const DEFAULT_OPTIONS: Required<IngestRedditOptions> = {
   aiMinConfidence: 0.75,
   aiMaxCalls: 200,
 };
+const REDDIT_THREAD_FETCH_TIMEOUT_MS = 15_000;
 
 export async function ingestReddit(
   options: IngestRedditOptions = {},
@@ -597,13 +598,18 @@ async function fetchPostContextByPostId(
   url.searchParams.set("raw_json", "1");
 
   let res: Response;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REDDIT_THREAD_FETCH_TIMEOUT_MS);
   try {
     res = await fetch(url, {
       headers: { "User-Agent": userAgent },
       cache: "no-store",
+      signal: controller.signal,
     });
   } catch {
     return fetchPostContextFailure();
+  } finally {
+    clearTimeout(timeout);
   }
 
   if (!res.ok) return fetchPostContextFailure();
