@@ -211,7 +211,7 @@ current demo.
 | `npm run dev:scheduler`   | Run the production cron jobs locally (ingest + rescue)    |
 | `npm run backfill:parse`  | Re-run the brand/reference parser and price extractor     |
 | `npm run backfill:local`  | Run local TF-IDF + LR classifiers on unfilled rows        |
-| `npm run backfill:ai`     | LLM-classify rows whose condition + watch_type are still null |
+| `npm run backfill:ai`     | LLM fallback for missing/approximate structured fields |
 
 ### Ingest examples
 

@@ -22,7 +22,13 @@
 import { and, eq, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { getDb } from "../../db";
 import { listingLabelReviews, listings, sources } from "../../db/schema";
-import { classifyListing, isAiAvailable } from "../ai/classify";
+import {
+  aiFieldConfidence,
+  classifyListing,
+  hasUsableAiExtraction,
+  isAiAvailable,
+  type AiExtraction,
+} from "../ai/classify";
 import { classifyLocal, isLocalAvailable } from "../ml/index";
 import {
   detectSold,
@@ -75,8 +81,8 @@ export type IngestRedditOptions = {
   /** Minimum local-model confidence to persist (0–1). Default 0.55. */
   localMinConfidence?: number;
   /**
-   * If true, after regex + local run an LLM classifier on rows that still
-   * have null `condition` or `watchType`. Requires OPENAI_API_KEY.
+   * If true, after regex + local run an LLM extraction fallback on rows that
+   * still have missing / approximate structured fields. Requires OPENAI_API_KEY.
    */
   useAi?: boolean;
   /** Minimum AI confidence to persist (0–1). Default 0.75. */
@@ -140,9 +146,9 @@ export async function ingestReddit(
   const rescueCandidates: RedditPost[] = [];
   const rescueSeen = new Set<string>();
   /**
-   * Posts that emerged from regex passes still missing BOTH condition and
-   * watchType. The optional AI step (later) classifies these from text.
-   * We store the OP comment text we already fetched so AI doesn't re-fetch.
+   * Posts that still have missing or approximate structured fields after
+   * regex/local passes. The optional AI step extracts fallback fields from text.
+   * We store OP comment text we already fetched so AI doesn't re-fetch.
    */
   const aiCandidates: Array<{ post: RedditPost; opText: string | null }> = [];
   const aiCandidateSeen = new Set<string>();
@@ -180,8 +186,14 @@ export async function ingestReddit(
       enqueueCommentRescue(post);
     }
     if (r.brand) brandParsed++;
-    // Track posts where regex couldn't classify either field — AI candidate.
-    if (r.condition == null && r.watchType == null) {
+    // Track posts where regex left material fields missing or approximate.
+    if (
+      r.priceCents == null ||
+      pricedFromFlairApprox ||
+      r.brand == null ||
+      r.reference == null ||
+      r.condition == null
+    ) {
       enqueueAiCandidate(post);
     }
   }
@@ -243,11 +255,13 @@ export async function ingestReddit(
           });
           await refreshListingBundleFlag(sourceId, post.id);
         }
-        // If regex still couldn't classify after seeing the OP comment, stash
-        // the comment text for the AI pass so we don't re-fetch it.
+        // If regex still left material fields missing or approximate after
+        // seeing the OP comment, stash it for the AI pass so we don't re-fetch.
         if (
+          exactPriceFromTexts == null &&
+          parsedFromContext.brand == null &&
+          parsedFromContext.reference == null &&
           conditionFromComment == null &&
-          watchTypeFromComment == null &&
           opText
         ) {
           enqueueAiCandidate(post, opText);
@@ -263,7 +277,6 @@ export async function ingestReddit(
   let localCalls = 0;
   let localLabeled = 0;
   if (opts.useLocal && isLocalAvailable() && aiCandidates.length > 0) {
-    const stillUnclassified: typeof aiCandidates = [];
     for (const item of aiCandidates) {
       localCalls++;
       const local = classifyLocal({
@@ -328,16 +341,11 @@ export async function ingestReddit(
             sql`source_id = ${sourceId} AND external_id = ${item.post.id}`,
           );
         localLabeled++;
-      } else {
-        stillUnclassified.push(item);
       }
     }
-    // Narrow the AI candidate list to only what local couldn't handle
-    aiCandidates.length = 0;
-    aiCandidates.push(...stillUnclassified);
   }
 
-  // ── OpenAI AI classifier pass ────────────────────────────────────────
+  // ── OpenAI AI extraction fallback ────────────────────────────────────
   let aiCalls = 0;
   let aiLabeled = 0;
   if (opts.useAi && isAiAvailable() && aiCandidates.length > 0) {
@@ -350,10 +358,9 @@ export async function ingestReddit(
         opComment: opText,
       });
       if (!result) continue;
-      if (result.condition == null && result.watchType == null) continue;
-      if (result.confidence < opts.aiMinConfidence) continue;
+      if (!hasUsableAiExtraction(result, opts.aiMinConfidence)) continue;
 
-      await applyAiClassification(sourceId, post.id, result);
+      await applyAiExtraction(sourceId, post.id, result, opts.aiMinConfidence);
       aiLabeled++;
     }
   }
@@ -721,6 +728,7 @@ type UpsertResult = {
   priceMinCents: number | null;
   priceMaxCents: number | null;
   brand: string | null;
+  reference: string | null;
   isSold: boolean;
   condition?: string | null;
   watchType?: string | null;
@@ -735,6 +743,7 @@ async function upsertPost(sourceId: number, post: RedditPost): Promise<UpsertRes
       priceMinCents: null,
       priceMaxCents: null,
       brand: null,
+      reference: null,
       isSold: false,
       condition: null,
       watchType: null,
@@ -884,6 +893,7 @@ async function upsertPost(sourceId: number, post: RedditPost): Promise<UpsertRes
     priceMinCents,
     priceMaxCents,
     brand: parsed.brand,
+    reference: parsed.reference,
     isSold,
     condition,
     watchType,
@@ -1025,32 +1035,93 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function aiFieldOk(
+  result: AiExtraction,
+  field: Parameters<typeof aiFieldConfidence>[1],
+  minConfidence: number,
+): boolean {
+  return aiFieldConfidence(result, field) >= minConfidence;
+}
+
 /**
- * Apply an AI classification to an existing listing row, but only fill in
- * fields the row hasn't already got. This protects regex-derived values
- * (which we trust more) from being overwritten by the LLM.
+ * Apply an AI extraction to an existing listing row, but only fill missing
+ * or approximate fields. This protects regex/local/manual values from being
+ * overwritten by the LLM while still letting AI rescue gaps.
  */
-async function applyAiClassification(
+async function applyAiExtraction(
   sourceId: number,
   externalId: string,
-  result: { condition: string | null; watchType: string | null; confidence: number },
+  result: AiExtraction,
+  minConfidence: number,
 ): Promise<void> {
   const db = getDb();
-  const confStr = result.confidence.toFixed(3);
   const set: Record<string, unknown> = {
     aiConfidence: result.confidence.toFixed(2),
     aiClassifiedAt: new Date(),
     classifierSource: "ai",
   };
-  if (result.condition) {
+
+  if (result.brand && aiFieldOk(result, "brand", minConfidence)) {
+    const confStr = aiFieldConfidence(result, "brand").toFixed(3);
+    set.brand = sql`COALESCE(brand, ${result.brand})`;
+    set.brandSource = sql`COALESCE(brand_source, 'ai')`;
+    set.brandConfidence = sql`COALESCE(brand_confidence, ${confStr})`;
+  }
+  if (result.model && aiFieldOk(result, "model", minConfidence)) {
+    set.modelRaw = sql`COALESCE(model_raw, ${result.model})`;
+  }
+  if (result.reference && aiFieldOk(result, "reference", minConfidence)) {
+    const confStr = aiFieldConfidence(result, "reference").toFixed(3);
+    set.reference = sql`COALESCE(\`reference\`, ${result.reference})`;
+    set.referenceSource = sql`COALESCE(reference_source, 'ai')`;
+    set.referenceConfidence = sql`COALESCE(reference_confidence, ${confStr})`;
+  }
+  if (result.priceCents != null && aiFieldOk(result, "price", minConfidence)) {
+    set.priceCents = sql`
+      CASE
+        WHEN price_cents IS NULL OR price_min_cents IS NOT NULL OR price_max_cents IS NOT NULL
+        THEN ${result.priceCents}
+        ELSE price_cents
+      END`;
+    set.priceMinCents = sql`
+      CASE
+        WHEN price_cents IS NULL OR price_min_cents IS NOT NULL OR price_max_cents IS NOT NULL
+        THEN ${result.priceMinCents}
+        ELSE price_min_cents
+      END`;
+    set.priceMaxCents = sql`
+      CASE
+        WHEN price_cents IS NULL OR price_min_cents IS NOT NULL OR price_max_cents IS NOT NULL
+        THEN ${result.priceMaxCents}
+        ELSE price_max_cents
+      END`;
+  }
+  if (result.condition && aiFieldOk(result, "condition", minConfidence)) {
+    const confStr = aiFieldConfidence(result, "condition").toFixed(3);
     set.condition = sql`COALESCE(\`condition\`, ${result.condition})`;
     set.conditionSource = sql`COALESCE(condition_source, 'ai')`;
     set.conditionConfidence = sql`COALESCE(condition_confidence, ${confStr})`;
   }
-  if (result.watchType) {
+  if (result.watchType && aiFieldOk(result, "watchType", minConfidence)) {
+    const confStr = aiFieldConfidence(result, "watchType").toFixed(3);
     set.watchType = sql`COALESCE(watch_type, ${result.watchType})`;
     set.watchTypeSource = sql`COALESCE(watch_type_source, 'ai')`;
     set.watchTypeConfidence = sql`COALESCE(watch_type_confidence, ${confStr})`;
+  }
+  if (result.isBundle === true && aiFieldOk(result, "isBundle", minConfidence)) {
+    set.isBundle = sql`
+      CASE
+        WHEN EXISTS (
+          SELECT 1 FROM listing_label_reviews lr
+          WHERE lr.listing_id = listings.id AND lr.bundle_reviewed IS TRUE
+        )
+        THEN is_bundle
+        ELSE TRUE
+      END`;
+  }
+  if (result.isSold === true && aiFieldOk(result, "isSold", minConfidence)) {
+    set.isSold = true;
+    set.soldAt = sql`COALESCE(sold_at, CURRENT_TIMESTAMP)`;
   }
   await db
     .update(listings)

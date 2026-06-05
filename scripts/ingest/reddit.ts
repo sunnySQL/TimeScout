@@ -17,7 +17,7 @@
  *   npm run ingest:reddit -- --no-rescue             # skip the DB rescue phase
  *   npm run ingest:reddit -- --rescue-only           # skip the /new walk
  *   npm run ingest:reddit -- --rescue-only --window 720  # rescue past 30 days
- *   npm run ingest:reddit -- --ai                    # AI-classify rows that regex missed
+ *   npm run ingest:reddit -- --ai                    # AI-extract fields regex/local missed
  *   npm run ingest:reddit -- --ai --ai-max 50        # cap AI calls (default 200)
  *   npm run ingest:reddit -- --debug                 # chattier output
  */
